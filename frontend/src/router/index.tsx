@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import CabinetLedger from '../pages/CabinetLedger'
 import Dashboard from '../pages/Dashboard'
 import FiberBatchList from '../pages/FiberBatchList'
 import MouldLedger from '../pages/MouldLedger'
@@ -13,6 +14,7 @@ export function AppRoutes() {
       <Route path="/fibers" element={<FiberBatchList />} />
       <Route path="/runs" element={<RunBoard />} />
       <Route path="/samples" element={<SampleCards />} />
+      <Route path="/cabinets" element={<CabinetLedger />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie'
+import { cabinetLabel, parseCabinetLabel, type CabinetGroup, type CabinetSlot } from '../types/cabinet-slot'
 import type { FiberBatch } from '../types/fiber-batch'
 import type { Mould } from '../types/mould'
 import type { PaperSample } from '../types/paper-sample'
@@ -63,11 +64,27 @@ const seedSamples: PaperSample[] = [
   { id: 6, sampleNo: 'YZ-06', runId: 6, sizeMm: 260, stripeCount: 57, evenness: '均匀', archiveBin: '丙柜-01', schemaRev: 2 },
 ]
 
+const CABINET_LAYOUT: Array<{ group: CabinetGroup; slots: number; capacity: number }> = [
+  { group: '甲', slots: 12, capacity: 4 },
+  { group: '乙', slots: 8, capacity: 3 },
+  { group: '丙', slots: 6, capacity: 2 },
+]
+
+const seedCabinetSlots: CabinetSlot[] = CABINET_LAYOUT.flatMap(({ group, slots, capacity }) =>
+  Array.from({ length: slots }, (_, index) => {
+    const slotNo = index + 1
+    return { label: cabinetLabel(group, slotNo), group, slotNo, capacity, schemaRev: 3 }
+  }),
+)
+
+const DEFAULT_SLOT_CAPACITY = 4
+
 class GbPaperMillDatabase extends Dexie {
   moulds!: Table<Mould, number>
   fiberBatches!: Table<FiberBatch, number>
   sheetRuns!: Table<SheetRun, number>
   paperSamples!: Table<PaperSample, number>
+  cabinetSlots!: Table<CabinetSlot, number>
 
   constructor() {
     super('gbpapermill-db')
@@ -96,6 +113,30 @@ class GbPaperMillDatabase extends Dexie {
         value.schemaRev = 2
       })
     })
+    this.version(3).stores({
+      cabinetSlots: '++id,&label,group,schemaRev',
+    }).upgrade(async (transaction) => {
+      const samples = (await transaction.table('paperSamples').toArray()) as PaperSample[]
+      const existing = new Set(
+        ((await transaction.table('cabinetSlots').toArray()) as CabinetSlot[]).map((slot) => slot.label),
+      )
+      const missing: CabinetSlot[] = []
+      for (const sample of samples) {
+        const parsed = parseCabinetLabel(sample.archiveBin)
+        if (!parsed || existing.has(sample.archiveBin)) continue
+        existing.add(sample.archiveBin)
+        missing.push({
+          label: sample.archiveBin,
+          group: parsed.group,
+          slotNo: parsed.slotNo,
+          capacity: DEFAULT_SLOT_CAPACITY,
+          schemaRev: 3,
+        })
+      }
+      if (missing.length > 0) {
+        await transaction.table('cabinetSlots').bulkAdd(plain(missing))
+      }
+    })
     this.on('populate', () => this.seed())
   }
 
@@ -104,6 +145,7 @@ class GbPaperMillDatabase extends Dexie {
     await this.fiberBatches.bulkAdd(plain(seedBatches))
     await this.sheetRuns.bulkAdd(plain(seedRuns))
     await this.paperSamples.bulkAdd(plain(seedSamples))
+    await this.cabinetSlots.bulkAdd(plain(seedCabinetSlots))
   }
 }
 

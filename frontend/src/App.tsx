@@ -10,6 +10,7 @@ const navItems = [
   { label: '纤维料批', path: '/fibers' },
   { label: '抄纸工序', path: '/runs' },
   { label: '成纸样本', path: '/samples' },
+  { label: '档案柜', path: '/cabinets' },
 ]
 
 function PapertrailMark() {
