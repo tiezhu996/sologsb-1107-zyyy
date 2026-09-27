@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie'
+import type { CabinetGroup, CabinetSlot } from '../types/cabinet-slot'
 import type { FiberBatch } from '../types/fiber-batch'
 import type { Mould } from '../types/mould'
 import type { PaperSample } from '../types/paper-sample'
@@ -55,12 +56,28 @@ const seedRuns: SheetRun[] = [
 ]
 
 const seedSamples: PaperSample[] = [
-  { id: 1, sampleNo: 'YZ-01', runId: 1, sizeMm: 210, stripeCount: 46, evenness: '均匀', archiveBin: '甲柜-03', schemaRev: 2 },
-  { id: 2, sampleNo: 'YZ-02', runId: 2, sizeMm: 180, stripeCount: 52, evenness: '略花', archiveBin: '甲柜-07', schemaRev: 2 },
-  { id: 3, sampleNo: 'YZ-03', runId: 3, sizeMm: 240, stripeCount: 39, evenness: '花', archiveBin: '乙柜-02', schemaRev: 2 },
-  { id: 4, sampleNo: 'YZ-04', runId: 4, sizeMm: 210, stripeCount: 31, evenness: '略花', archiveBin: '乙柜-05', schemaRev: 2 },
-  { id: 5, sampleNo: 'YZ-05', runId: 5, sizeMm: 200, stripeCount: 48, evenness: '均匀', archiveBin: '甲柜-11', schemaRev: 2 },
-  { id: 6, sampleNo: 'YZ-06', runId: 6, sizeMm: 260, stripeCount: 57, evenness: '均匀', archiveBin: '丙柜-01', schemaRev: 2 },
+  { id: 1, sampleNo: 'YZ-01', runId: 1, sizeMm: 210, stripeCount: 46, evenness: '均匀', archiveBin: '甲柜-03', schemaRev: 3 },
+  { id: 2, sampleNo: 'YZ-02', runId: 2, sizeMm: 180, stripeCount: 52, evenness: '略花', archiveBin: '甲柜-07', schemaRev: 3 },
+  { id: 3, sampleNo: 'YZ-03', runId: 3, sizeMm: 240, stripeCount: 39, evenness: '花', archiveBin: '乙柜-02', schemaRev: 3 },
+  { id: 4, sampleNo: 'YZ-04', runId: 4, sizeMm: 210, stripeCount: 31, evenness: '略花', archiveBin: '乙柜-05', schemaRev: 3 },
+  { id: 5, sampleNo: 'YZ-05', runId: 5, sizeMm: 200, stripeCount: 48, evenness: '均匀', archiveBin: '甲柜-11', schemaRev: 3 },
+  { id: 6, sampleNo: 'YZ-06', runId: 6, sizeMm: 260, stripeCount: 57, evenness: '均匀', archiveBin: '丙柜-01', schemaRev: 3 },
+]
+
+function buildSlots(group: CabinetGroup, cells: number, capacity: number, startId: number): CabinetSlot[] {
+  return Array.from({ length: cells }, (_, index) => ({
+    id: startId + index,
+    group,
+    cellNo: index + 1,
+    capacity,
+    schemaRev: 3,
+  }))
+}
+
+const seedCabinetSlots: CabinetSlot[] = [
+  ...buildSlots('甲', 12, 4, 1),
+  ...buildSlots('乙', 8, 3, 13),
+  ...buildSlots('丙', 6, 2, 21),
 ]
 
 class GbPaperMillDatabase extends Dexie {
@@ -68,6 +85,7 @@ class GbPaperMillDatabase extends Dexie {
   fiberBatches!: Table<FiberBatch, number>
   sheetRuns!: Table<SheetRun, number>
   paperSamples!: Table<PaperSample, number>
+  cabinetSlots!: Table<CabinetSlot, number>
 
   constructor() {
     super('gbpapermill-db')
@@ -96,6 +114,27 @@ class GbPaperMillDatabase extends Dexie {
         value.schemaRev = 2
       })
     })
+    this.version(3).stores({
+      moulds: '++id,&mouldNo,state,wireMaterial,schemaRev',
+      fiberBatches: '++id,&batchNo,material,beatingDegree,schemaRev',
+      sheetRuns: '++id,&runNo,mouldId,batchId,runDate,operator,schemaRev',
+      paperSamples: '++id,&sampleNo,runId,evenness,stripeCount,archiveBin,schemaRev',
+      cabinetSlots: '++id,&[group+cellNo],group,schemaRev',
+    }).upgrade(async (transaction) => {
+      await transaction.table('moulds').toCollection().modify((value: Record<string, unknown>) => {
+        value.schemaRev = 3
+      })
+      await transaction.table('fiberBatches').toCollection().modify((value: Record<string, unknown>) => {
+        value.schemaRev = 3
+      })
+      await transaction.table('sheetRuns').toCollection().modify((value: Record<string, unknown>) => {
+        value.schemaRev = 3
+      })
+      await transaction.table('paperSamples').toCollection().modify((value: Record<string, unknown>) => {
+        value.schemaRev = 3
+      })
+      await transaction.table('cabinetSlots').bulkAdd(plain(seedCabinetSlots))
+    })
     this.on('populate', () => this.seed())
   }
 
@@ -104,6 +143,7 @@ class GbPaperMillDatabase extends Dexie {
     await this.fiberBatches.bulkAdd(plain(seedBatches))
     await this.sheetRuns.bulkAdd(plain(seedRuns))
     await this.paperSamples.bulkAdd(plain(seedSamples))
+    await this.cabinetSlots.bulkAdd(plain(seedCabinetSlots))
   }
 }
 

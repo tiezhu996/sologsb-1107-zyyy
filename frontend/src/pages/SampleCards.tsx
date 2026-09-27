@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Box, Button, Card, CardContent, Chip, Grid, Stack, TextField, Typography } from '@mui/material'
+import { Alert, Box, Button, Card, CardContent, Chip, Grid, LinearProgress, Stack, TextField, Typography } from '@mui/material'
 import { GrainStripePreview } from '../components/common/GrainStripePreview'
 import { RulerInput } from '../components/common/RulerInput'
 import { StatBadge } from '../components/common/StatBadge'
 import { useUnitConvert } from '../hooks/useUnitConvert'
+import { useCabinetStore } from '../stores/cabinetStore'
 import { useMouldStore } from '../stores/mouldStore'
 import { useRunStore } from '../stores/runStore'
 import { useSampleStore } from '../stores/sampleStore'
-import { EVENNESS_LEVELS, type EvennessLevel, type PaperSampleInput } from '../types/paper-sample'
+import { CABINET_GROUPS, type CabinetSlot } from '../types/cabinet-slot'
+import { EVENNESS_LEVELS, type EvennessLevel, type PaperSample, type PaperSampleInput } from '../types/paper-sample'
+import { countSamplesBySlot, isSlotFull, slotCode, slotPlaced } from '../utils/cabinet'
 import { isGapOutOfTolerance } from '../utils/stripe'
 
 const emptySampleForm: PaperSampleInput = {
@@ -16,7 +19,7 @@ const emptySampleForm: PaperSampleInput = {
   sizeMm: 210,
   stripeCount: 45,
   evenness: '均匀',
-  archiveBin: '待归档-01',
+  archiveBin: '',
 }
 
 function stripeTier(count: number): { label: string; color: 'success' | 'info' | 'warning' } {
@@ -25,17 +28,82 @@ function stripeTier(count: number): { label: string; color: 'success' | 'info' |
   return { label: '疏纹档', color: 'warning' }
 }
 
+function slotOptionLabel(slot: CabinetSlot, counts: Map<string, number>): string {
+  const code = slotCode(slot.group, slot.cellNo)
+  const placed = slotPlaced(slot, counts)
+  return `${code} · 已放 ${placed}/${slot.capacity} 张${placed >= slot.capacity ? '（已满）' : ''}`
+}
+
+interface TransferControlProps {
+  sample: PaperSample
+  slots: CabinetSlot[]
+  counts: Map<string, number>
+  onTransfer: (id: number, nextBin: string) => Promise<boolean>
+}
+
+function TransferControl({ sample, slots, counts, onTransfer }: TransferControlProps) {
+  const candidates = useMemo(
+    () => slots.filter((slot) => slotCode(slot.group, slot.cellNo) !== sample.archiveBin && !isSlotFull(slot, counts)),
+    [counts, sample.archiveBin, slots],
+  )
+  const [target, setTarget] = useState('')
+  const [moving, setMoving] = useState(false)
+
+  useEffect(() => {
+    if (!candidates.some((slot) => slotCode(slot.group, slot.cellNo) === target)) {
+      setTarget(candidates.length ? slotCode(candidates[0].group, candidates[0].cellNo) : '')
+    }
+  }, [candidates, target])
+
+  if (candidates.length === 0) {
+    return <Typography variant="caption" color="text.secondary">其他柜位均已放满，暂不可调拨</Typography>
+  }
+
+  const handleTransfer = async () => {
+    if (!target || sample.id == null) return
+    setMoving(true)
+    await onTransfer(sample.id, target)
+    setMoving(false)
+  }
+
+  return (
+    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+      <TextField
+        select
+        size="small"
+        fullWidth
+        label="调拨至"
+        value={target}
+        onChange={(event) => setTarget(event.target.value)}
+        SelectProps={{ native: true, inputProps: { 'data-testid': `field-transferBin-${sample.sampleNo}` } }}
+      >
+        {candidates.map((slot) => {
+          const code = slotCode(slot.group, slot.cellNo)
+          return <option key={code} value={code}>{slotOptionLabel(slot, counts)}</option>
+        })}
+      </TextField>
+      <Button size="small" variant="outlined" onClick={handleTransfer} disabled={moving || !target} data-testid={`submit-transfer-${sample.sampleNo}`} sx={{ whiteSpace: 'nowrap' }}>
+        调拨
+      </Button>
+    </Box>
+  )
+}
+
 export default function SampleCards() {
   const samples = useSampleStore((state) => state.paperSamples)
   const error = useSampleStore((state) => state.error)
   const loadSamples = useSampleStore((state) => state.loadSamples)
   const addSample = useSampleStore((state) => state.addSample)
+  const transferSample = useSampleStore((state) => state.transferSample)
   const runs = useRunStore((state) => state.sheetRuns)
   const runError = useRunStore((state) => state.error)
   const loadRuns = useRunStore((state) => state.loadRuns)
   const moulds = useMouldStore((state) => state.moulds)
   const mouldError = useMouldStore((state) => state.error)
   const loadMoulds = useMouldStore((state) => state.loadMoulds)
+  const slots = useCabinetStore((state) => state.cabinetSlots)
+  const cabinetError = useCabinetStore((state) => state.error)
+  const loadSlots = useCabinetStore((state) => state.loadSlots)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<PaperSampleInput>(emptySampleForm)
   const [evennessFilter, setEvennessFilter] = useState<EvennessLevel | '全部'>('全部')
@@ -47,16 +115,27 @@ export default function SampleCards() {
     void loadSamples()
     void loadRuns()
     void loadMoulds()
-  }, [loadMoulds, loadRuns, loadSamples])
+    void loadSlots()
+  }, [loadMoulds, loadRuns, loadSamples, loadSlots])
 
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs])
   const mouldById = useMemo(() => new Map(moulds.map((mould) => [mould.id, mould])), [moulds])
+  const slotCounts = useMemo(() => countSamplesBySlot(samples), [samples])
+  const openSlots = useMemo(() => slots.filter((slot) => !isSlotFull(slot, slotCounts)), [slots, slotCounts])
   const filteredSamples = useMemo(
     () => samples.filter((sample) => (evennessFilter === '全部' || sample.evenness === evennessFilter) && sample.stripeCount >= stripeFloor),
     [evennessFilter, samples, stripeFloor],
   )
   const denseCount = samples.filter((sample) => sample.stripeCount >= 50).length
   const recheckCount = samples.filter((sample) => sample.evenness !== '均匀').length
+
+  useEffect(() => {
+    const selected = slots.find((slot) => slotCode(slot.group, slot.cellNo) === form.archiveBin)
+    if (!selected || isSlotFull(selected, slotCounts)) {
+      const next = openSlots[0]
+      setForm((current) => ({ ...current, archiveBin: next ? slotCode(next.group, next.cellNo) : '' }))
+    }
+  }, [form.archiveBin, openSlots, slotCounts, slots])
 
   const updateForm = <K extends keyof PaperSampleInput,>(key: K, value: PaperSampleInput[K]) => {
     setForm((current) => ({ ...current, [key]: value }))
@@ -73,7 +152,11 @@ export default function SampleCards() {
     }
   }
 
-  const errorMessage = error ?? runError ?? mouldError
+  const handleTransfer = async (id: number, nextBin: string) => transferSample(id, nextBin)
+
+  const selectedSlot = slots.find((slot) => slotCode(slot.group, slot.cellNo) === form.archiveBin)
+  const selectedPlaced = selectedSlot ? slotPlaced(selectedSlot, slotCounts) : 0
+  const errorMessage = error ?? runError ?? mouldError ?? cabinetError
 
   return (
     <Stack spacing={3}>
@@ -108,7 +191,34 @@ export default function SampleCards() {
                   {EVENNESS_LEVELS.map((option) => <option key={option} value={option}>{option}</option>)}
                 </TextField>
               </Grid>
-              <Grid item xs={12} md={5}><TextField fullWidth label="存档位" value={form.archiveBin} onChange={(event) => updateForm('archiveBin', event.target.value)} inputProps={{ 'data-testid': 'field-archiveBin' }} /></Grid>
+              <Grid item xs={12} md={5}>
+                <TextField
+                  select
+                  fullWidth
+                  label="存档位"
+                  value={form.archiveBin}
+                  onChange={(event) => updateForm('archiveBin', event.target.value)}
+                  SelectProps={{ native: true, inputProps: { 'data-testid': 'field-archiveBin' } }}
+                  helperText={
+                    selectedSlot
+                      ? `该格已放 ${selectedPlaced} 张，可再放 ${selectedSlot.capacity - selectedPlaced} 张`
+                      : openSlots.length === 0
+                        ? '所有柜位均已放满，请先在柜位台账增格'
+                        : '从还有空位的柜位中挑选'
+                  }
+                >
+                  {form.archiveBin === '' && <option value="">暂无可选柜位</option>}
+                  {slots.map((slot) => {
+                    const code = slotCode(slot.group, slot.cellNo)
+                    const full = isSlotFull(slot, slotCounts)
+                    return (
+                      <option key={code} value={code} disabled={full}>
+                        {slotOptionLabel(slot, slotCounts)}
+                      </option>
+                    )
+                  })}
+                </TextField>
+              </Grid>
             </Grid>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.5, mt: 2.5 }}>
               <Button onClick={() => setShowForm(false)}>取消</Button>
@@ -123,6 +233,56 @@ export default function SampleCards() {
         <StatBadge label="密纹样本" value={denseCount} detail="帘纹条数不少于 50" tone="bamboo" />
         <StatBadge label="待复检" value={recheckCount} detail="匀度非“均匀”" tone={recheckCount ? 'warning' : 'neutral'} />
       </Box>
+
+      <Card data-testid="board-occupancy">
+        <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 2, mb: 2, flexWrap: 'wrap' }}>
+            <Typography variant="h5">柜位占用</Typography>
+            <Typography variant="body2" color="text.secondary">按柜组逐格清点，放满的格子已标出。</Typography>
+          </Box>
+          <Grid container spacing={2}>
+            {CABINET_GROUPS.map((group) => {
+              const groupSlots = slots.filter((slot) => slot.group === group)
+              const groupPlaced = groupSlots.reduce((sum, slot) => sum + slotPlaced(slot, slotCounts), 0)
+              const groupCapacity = groupSlots.reduce((sum, slot) => sum + slot.capacity, 0)
+              const groupFull = groupCapacity > 0 && groupPlaced >= groupCapacity
+              return (
+                <Grid item xs={12} md={4} key={group}>
+                  <Box sx={{ border: '1px solid', borderColor: groupFull ? '#d9a928' : '#d7ccb6', borderRadius: 2, p: 1.5, bgcolor: groupFull ? '#fff8df' : 'transparent' }} data-testid={`occupancy-${group}`}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                      <Typography sx={{ fontWeight: 800 }}>{group}柜</Typography>
+                      <Chip size="small" color={groupFull ? 'warning' : 'default'} variant={groupFull ? 'filled' : 'outlined'} label={`${groupPlaced}/${groupCapacity} 张`} />
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={groupCapacity ? Math.min(100, (groupPlaced / groupCapacity) * 100) : 0}
+                      color={groupFull ? 'warning' : 'success'}
+                      sx={{ height: 6, borderRadius: 3, bgcolor: '#e8e1d4', mb: 1.25 }}
+                    />
+                    <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                      {groupSlots.map((slot) => {
+                        const placed = slotPlaced(slot, slotCounts)
+                        const full = isSlotFull(slot, slotCounts)
+                        return (
+                          <Chip
+                            key={slot.id ?? slot.cellNo}
+                            size="small"
+                            color={full ? 'warning' : 'default'}
+                            variant={full ? 'filled' : 'outlined'}
+                            data-testid={full ? 'cell-full' : 'cell-open'}
+                            label={`${String(slot.cellNo).padStart(2, '0')} · ${placed}/${slot.capacity}${full ? ' 已满' : ` 余${slot.capacity - placed}`}`}
+                          />
+                        )
+                      })}
+                      {groupSlots.length === 0 && <Typography variant="body2" color="text.secondary">尚未登记柜位</Typography>}
+                    </Box>
+                  </Box>
+                </Grid>
+              )
+            })}
+          </Grid>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent sx={{ p: { xs: 2, md: 2.5 } }}>
@@ -177,6 +337,11 @@ export default function SampleCards() {
                   <Chip size="small" variant="outlined" label={`存档 ${sample.archiveBin}`} />
                   {run && isGapOutOfTolerance(run.deviation) && <Chip size="small" color="warning" label={`偏差 ${run.deviation > 0 ? '+' : ''}${run.deviation.toFixed(2)} mm`} />}
                 </Box>
+                {sample.id != null && (
+                  <Box sx={{ mt: 1.5 }} data-testid={`transfer-${sample.sampleNo}`}>
+                    <TransferControl sample={sample} slots={slots} counts={slotCounts} onTransfer={handleTransfer} />
+                  </Box>
+                )}
               </CardContent>
             </Card>
           )
